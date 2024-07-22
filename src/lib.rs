@@ -5,7 +5,7 @@
 mod nonce;
 mod rfc3339;
 
-#[cfg(feature = "ethers")]
+#[cfg(feature = "alloy")]
 mod eip1271;
 
 use ::core::{
@@ -22,8 +22,11 @@ use std::convert::{TryFrom, TryInto};
 use thiserror::Error;
 use time::OffsetDateTime;
 
-#[cfg(feature = "ethers")]
-use ethers::prelude::*;
+#[cfg(feature = "alloy")]
+use alloy::{
+    providers::RootProvider,
+    transports::http::{Client, Http},
+};
 
 #[cfg(feature = "serde")]
 use serde::{
@@ -342,9 +345,9 @@ typed_builder_doc! {
         pub nonce: Option<String>,
         /// Datetime for which the message should be valid at.
         pub timestamp: Option<OffsetDateTime>,
-        #[cfg(feature = "ethers")]
+        #[cfg(feature = "alloy")]
         /// RPC Provider used for on-chain checks. Necessary for contract wallets signatures.
-        pub rpc_provider: Option<Provider<Http>>,
+        pub rpc_provider: Option<RootProvider<Http<Client>>>,
     }
 }
 
@@ -357,7 +360,7 @@ impl Default for VerificationOpts {
             domain: None,
             nonce: None,
             timestamp: None,
-            #[cfg(feature = "ethers")]
+            #[cfg(feature = "alloy")]
             rpc_provider: None,
         }
     }
@@ -384,13 +387,13 @@ pub enum VerificationError {
     #[error("Message nonce does not match")]
     /// Expected message nonce does not match.
     NonceMismatch,
-    #[cfg(feature = "ethers")]
+    #[cfg(feature = "alloy")]
     // Using a String because the original type requires a lifetime.
     #[error("Contract wallet query failed: {0}")]
     /// Contract wallet verification failed unexpectedly.
     ContractCall(String),
-    #[error("The signature is not 65 bytes long. It might mean that it is a EIP1271 signature and you have the `ethers` feature disabled or configured a provider.")]
-    /// The signature is not 65 bytes long. It might mean that it is a EIP1271 signature and you have the `ethers` feature disabled or configured a provider.
+    #[error("The signature is not 65 bytes long. It might mean that it is a EIP1271 signature and you haven't enabled the `alloy` feature or configured a provider.")]
+    /// The signature is not 65 bytes long. It might mean that it is a EIP1271 signature and you haven't enabled the `alloy` feature or configured a provider.
     SignatureLength,
 }
 
@@ -452,7 +455,7 @@ impl Message {
         }
     }
 
-    #[cfg(feature = "ethers")]
+    #[cfg(feature = "alloy")]
     /// Verify the integrity of a, potentially, EIP-1271 signed message.
     ///
     /// # Arguments
@@ -466,7 +469,7 @@ impl Message {
     pub async fn verify_eip1271(
         &self,
         sig: &[u8],
-        provider: &Provider<Http>,
+        provider: &RootProvider<Http<Client>>,
     ) -> Result<bool, VerificationError> {
         let hash = Keccak256::new_with_prefix(self.eip191_bytes().unwrap()).finalize();
         eip1271::verify_eip1271(self.address, hash.as_ref(), sig, provider).await
@@ -535,7 +538,7 @@ impl Message {
             Err(VerificationError::SignatureLength)
         };
 
-        #[cfg(feature = "ethers")]
+        #[cfg(feature = "alloy")]
         if let Err(e) = res {
             if let Some(provider) = &opts.rpc_provider {
                 if self.verify_eip1271(sig, provider).await? {
@@ -803,7 +806,7 @@ Resources:
         include_str!("../tests/siwe/test/verification_positive.json");
     const VERIFICATION_NEGATIVE: &str =
         include_str!("../tests/siwe/test/verification_negative.json");
-    #[cfg(feature = "ethers")]
+    #[cfg(feature = "alloy")]
     const VERIFICATION_EIP1271: &str = include_str!("../tests/siwe/test/eip1271.json");
 
     fn fields_to_message(fields: &serde_json::Value) -> anyhow::Result<Message> {
@@ -914,7 +917,7 @@ Resources:
         }
     }
 
-    #[cfg(feature = "ethers")]
+    #[cfg(feature = "alloy")]
     #[tokio::test]
     async fn verification_eip1271() {
         let tests: serde_json::Value = serde_json::from_str(VERIFICATION_EIP1271).unwrap();
@@ -929,11 +932,17 @@ Resources:
                     .unwrap(),
             )
             .unwrap();
+
+            println!("SIGNATURE: {:?}", signature);
+            let rpc_url = "https://eth.llamarpc.com".parse().unwrap();
+            let provider = alloy::providers::ProviderBuilder::new().on_http(rpc_url);
             let opts = VerificationOpts {
-                rpc_provider: Some("https://eth.llamarpc.com".try_into().unwrap()),
+                rpc_provider: Some(provider),
                 ..Default::default()
             };
-            assert!(message.verify(&signature, &opts).await.is_ok());
+            let result = message.verify(&signature, &opts).await;
+            println!("{:?}", result);
+            assert!(result.is_ok());
             println!("✅")
         }
     }

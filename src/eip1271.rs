@@ -1,9 +1,11 @@
-use std::collections::BTreeMap;
-
-use ethers::{
-    abi::{Abi, Function, Param, ParamType, StateMutability},
-    contract::{AbiError, ContractInstance},
-    prelude::*,
+use alloy::{
+    contract::{ContractInstance, Error as ContractError, Interface},
+    dyn_abi::DynSolValue,
+    json_abi::JsonAbi,
+};
+use alloy::{
+    providers::RootProvider,
+    transports::http::{Client, Http},
 };
 
 use crate::VerificationError;
@@ -14,55 +16,29 @@ pub async fn verify_eip1271(
     address: [u8; 20],
     message_hash: &[u8; 32],
     signature: &[u8],
-    provider: &Provider<Http>,
+    provider: &RootProvider<Http<Client>>,
 ) -> Result<bool, VerificationError> {
-    #[allow(deprecated)]
-    let abi = Abi {
-        constructor: None,
-        functions: BTreeMap::from([(
-            METHOD_NAME.to_string(),
-            vec![Function {
-                name: METHOD_NAME.to_string(),
-                inputs: vec![
-                    Param {
-                        name: " _message".to_string(),
-                        kind: ParamType::FixedBytes(32),
-                        internal_type: Some("bytes32".to_string()),
-                    },
-                    Param {
-                        name: " _signature".to_string(),
-                        kind: ParamType::Bytes,
-                        internal_type: Some("bytes".to_string()),
-                    },
-                ],
-                outputs: vec![Param {
-                    name: "".to_string(),
-                    kind: ParamType::FixedBytes(4),
-                    internal_type: Some("bytes4".to_string()),
-                }],
-                constant: None,
-                state_mutability: StateMutability::View,
-            }],
-        )]),
-        events: BTreeMap::new(),
-        errors: BTreeMap::new(),
-        receive: false,
-        fallback: false,
-    };
+    let abi = JsonAbi::parse([
+        "function isValidSignature(bytes32 _message, bytes _signature) public view returns (bytes4)",
+    ]).unwrap();
 
-    let contract = ContractInstance::<&Provider<Http>, Provider<Http>>::new(address, abi, provider);
+    let interface = Interface::new(abi);
+    let contract: ContractInstance<_, _, _> = interface.connect(address.into(), provider);
 
     match contract
-        .method::<_, [u8; 4]>(
+        .function(
             METHOD_NAME,
-            (*message_hash, Bytes::from(signature.to_owned())),
+            &[
+                DynSolValue::FixedBytes(message_hash.into(), 32),
+                DynSolValue::Bytes(signature.to_vec()),
+            ],
         )
         .unwrap()
-        .call()
+        .call_raw()
         .await
     {
-        Ok(r) => Ok(r == [22, 38, 186, 126]),
-        Err(ContractError::AbiError(AbiError::DecodingError(_))) => Ok(false),
+        Ok(bytes) => Ok(**bytes == [22, 38, 186, 126]),
+        Err(ContractError::AbiError(_)) => Ok(false),
         Err(e) => Err(VerificationError::ContractCall(e.to_string())),
     }
 }
