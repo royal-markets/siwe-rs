@@ -16,6 +16,7 @@ alloy = ["dep:alloy"]
 
 [dependencies]
 alloy = { version = "0.2", features = ["contract", "dyn-abi", "json-abi", "providers", "transport-http"], optional = true}
+eth-signature-verifier = "0.2"
 iri-string = "0.7"
 hex = "0.4"
 k256 = { version = "0.13", default-features = false, features = [

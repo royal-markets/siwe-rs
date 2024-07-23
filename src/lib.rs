@@ -5,9 +5,6 @@
 mod nonce;
 mod rfc3339;
 
-#[cfg(feature = "alloy")]
-mod eip1271;
-
 use ::core::{
     convert::Infallible,
     fmt::{self, Display, Formatter},
@@ -24,6 +21,7 @@ use time::OffsetDateTime;
 
 #[cfg(feature = "alloy")]
 use alloy::{
+    primitives::Address,
     providers::RootProvider,
     transports::http::{Client, Http},
 };
@@ -455,26 +453,6 @@ impl Message {
         }
     }
 
-    #[cfg(feature = "alloy")]
-    /// Verify the integrity of a, potentially, EIP-1271 signed message.
-    ///
-    /// # Arguments
-    /// - `sig` - Signature of the message signed by the wallet.
-    /// - `provider` - Provider used to query the chain.
-    ///
-    /// # Example (find a provider at https://ethereumnodes.com/)
-    /// ```ignore
-    /// let is_valid: bool = message.verify_eip1271(&signature, "https://provider.example.com/".try_into().unwrap())?;
-    /// ```
-    pub async fn verify_eip1271(
-        &self,
-        sig: &[u8],
-        provider: &RootProvider<Http<Client>>,
-    ) -> Result<bool, VerificationError> {
-        let hash = Keccak256::new_with_prefix(self.eip191_bytes().unwrap()).finalize();
-        eip1271::verify_eip1271(self.address, hash.as_ref(), sig, provider).await
-    }
-
     /// Validates time constraints and integrity of the object by matching it's signature.
     ///
     /// # Arguments
@@ -541,8 +519,18 @@ impl Message {
         #[cfg(feature = "alloy")]
         if let Err(e) = res {
             if let Some(provider) = &opts.rpc_provider {
-                if self.verify_eip1271(sig, provider).await? {
-                    return Ok(());
+                let address = Address::from(self.address);
+                let message = alloy::primitives::eip191_hash_message(self.to_string().as_bytes());
+                let signature = sig.to_vec();
+
+                let verifier =
+                    eth_signature_verifier::verify_signature(signature, address, message, provider);
+                match verifier.await {
+                    Ok(eth_signature_verifier::Verification::Valid) => return Ok(()),
+                    Ok(eth_signature_verifier::Verification::Invalid) => {
+                        return Err(VerificationError::Signer)
+                    }
+                    Err(e) => return Err(VerificationError::ContractCall(e.to_string())),
                 }
             }
             return Err(e);
