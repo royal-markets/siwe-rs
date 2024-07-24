@@ -675,11 +675,71 @@ const RID_TAG: &str = "Request ID: ";
 const RES_TAG: &str = "Resources:";
 
 #[cfg(test)]
+mod test_helpers;
+
+#[cfg(test)]
 mod tests {
+    use alloy::sol_types::{SolCall, SolConstructor, SolValue};
     use time::format_description::well_known::Rfc3339;
 
     use super::*;
+    use alloy::primitives::{b256, Uint};
+    use alloy::sol;
     use std::convert::TryInto;
+
+    sol! {
+        contract Erc1271Mock {
+            address owner_eoa;
+
+            constructor(address owner_eoa) {
+                owner_eoa = owner_eoa;
+            }
+        }
+    }
+
+    sol! {
+        contract Create2 {
+            function deploy(uint256 amount, bytes32 salt, bytes memory bytecode) external payable returns (address addr);
+        }
+    }
+
+    fn predeploy_signature(
+        owner_eoa: Address,
+        create2_factory_address: Address,
+        signature: Vec<u8>,
+    ) -> (Address, Vec<u8>) {
+        let salt = b256!("7c5ea36004851c764c44143b1dcb59679b11c9a68e5f41497f6cf3d480715331");
+        const ERC1271_MOCK_BYTECODE: &[u8] =
+            include_bytes!("../artifacts/Erc1271Mock/Erc1271Mock.bytecode");
+        const ERC6492_MAGIC_BYTES: [u16; 16] = [
+            0x6492, 0x6492, 0x6492, 0x6492, 0x6492, 0x6492, 0x6492, 0x6492, 0x6492, 0x6492, 0x6492,
+            0x6492, 0x6492, 0x6492, 0x6492, 0x6492,
+        ];
+        let contract_bytecode = ERC1271_MOCK_BYTECODE;
+        let contract_constructor = Erc1271Mock::constructorCall { owner_eoa };
+
+        let bytecode = contract_bytecode
+            .iter()
+            .cloned()
+            .chain(contract_constructor.abi_encode())
+            .collect::<Vec<u8>>();
+        let predeploy_address = create2_factory_address.create2_from_code(salt, bytecode.clone());
+        let signature = (
+            create2_factory_address,
+            Create2::deployCall {
+                amount: Uint::ZERO,
+                salt,
+                bytecode: bytecode.into(),
+            }
+            .abi_encode(),
+            signature,
+        )
+            .abi_encode_sequence()
+            .into_iter()
+            .chain(ERC6492_MAGIC_BYTES.iter().flat_map(|&x| x.to_be_bytes()))
+            .collect::<Vec<u8>>();
+        (predeploy_address, signature)
+    }
 
     #[test]
     fn parsing() {
@@ -910,6 +970,7 @@ Resources:
     async fn verification_eip1271() {
         let tests: serde_json::Value = serde_json::from_str(VERIFICATION_EIP1271).unwrap();
         for (test_name, test) in tests.as_object().unwrap() {
+            println!("test message: {:?}", test["message"]);
             print!("{} -> ", test_name);
             let message = Message::from_str(test["message"].as_str().unwrap()).unwrap();
             let signature = <Vec<u8>>::from_hex(
@@ -937,32 +998,82 @@ Resources:
 
     #[cfg(feature = "alloy")]
     #[tokio::test]
-    async fn verification_eip1271() {
-        let tests: serde_json::Value = serde_json::from_str(VERIFICATION_EIP1271).unwrap();
-        for (test_name, test) in tests.as_object().unwrap() {
-            print!("{} -> ", test_name);
-            let message = Message::from_str(test["message"].as_str().unwrap()).unwrap();
-            let signature = <Vec<u8>>::from_hex(
-                test["signature"]
-                    .as_str()
-                    .unwrap()
-                    .strip_prefix("0x")
-                    .unwrap(),
-            )
-            .unwrap();
+    async fn verification_deployed_smart_wallet() {
+        use alloy::primitives::{eip191_hash_message, Bytes};
 
-            println!("SIGNATURE: {:?}", signature);
-            let rpc_url = "https://eth.llamarpc.com".parse().unwrap();
-            let provider = alloy::providers::ProviderBuilder::new().on_http(rpc_url);
-            let opts = VerificationOpts {
-                rpc_provider: Some(provider),
-                ..Default::default()
-            };
-            let result = message.verify(&signature, &opts).await;
-            println!("{:?}", result);
-            assert!(result.is_ok());
-            println!("✅")
-        }
+        let (anvil, rpc_url, provider, private_key) = test_helpers::spawn_anvil();
+
+        let signer: Address = "0x4836a472ab1dd406ecb8d0f933a985541ee3921f"
+        .parse()
+        .unwrap();
+    let hash = hex::decode("787177").unwrap();
+    let hash = eip191_hash_message(hash);
+    let string_from_hash = hex::encode(hash);
+    println!("hash: {:?}", string_from_hash);
+    let signature = Bytes::from("0x000000000000000000000000bf07a0df119ca234634588fbdb5625594e2a5bca00000000000000000000000000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000420000000000000000000000000000000000000000000000000000000000000038449c81579000000000000000000000000000000000000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000010000000000000000000000004836a472ab1dd406ecb8d0f933a985541ee3921f0000000000000000000000000000000000000000000000000000000000000120000000000000000000000000000000000000000000000000000000000000007a7f00000000000000000000000000000000000000000000000000000000000000017f7f0f292b79d9ce101861526459da50f62368077ae24affe97b792bf4bdd2e171553d602d80604d3d3981f3363d3d373d3d3d363d732a2b85eb1054d6f0c6c2e37da05ed3e5fea684ef5af43d82803e903d91602b57fd5bf300000000000000000000000000000000000000000000000000000000000000000000000002246171d1c9000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000001a00000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000c00000000000000000000000004836a472ab1dd406ecb8d0f933a985541ee3921f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000942f9ce5d9a33a82f88d233aeb3292e6802303480000000000000000000000000000000000000000000000000014c3c6ef1cdc01000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000042f2eaaebf45fc0340eb55f11c52a30e2ca7f48539d0a1f1cdc240482210326494545def903e8ed4441bd5438109abe950f1f79baf032f184728ba2d4161dea32e1b0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000042c0f8db6019888d87a0afc1299e81ef45d3abce64f63072c8d7a6ef00f5f82c1522958ff110afa98b8c0d23b558376db1d2fbab4944e708f8bf6dc7b977ee07201b000000000000000000000000000000000000000000000000000000000000006492649264926492649264926492649264926492649264926492649264926492");
+
+    let opts = VerificationOpts {
+                    rpc_provider: Some(alloy::providers::ProviderBuilder::new().on_http("https://polygon-rpc.com".parse().unwrap())),
+                    ..Default::default()
+                };
+
+        let message  = Message::from_str(&string_from_hash).unwrap();
+        let result = message.verify(&signature, &opts).await;
+        println!("{:?}", result);
+        assert!(result.is_ok());
+        println!("✅")
+    }
+
+    #[cfg(feature = "alloy")]
+    #[tokio::test]
+    async fn verification_predeployed_smart_wallet() {
+        let (_anvil, rpc_url, provider, private_key) = test_helpers::spawn_anvil();
+        let create2_factory_address = test_helpers::deploy_contract(
+            &rpc_url,
+            &private_key,
+            test_helpers::CREATE2_CONTRACT,
+            None,
+        )
+        .await;
+
+        println!("private key: {:?}", private_key);
+
+        let eoa_owner_address = Address::from_private_key(&private_key);
+
+        let message = Message::from_str(
+            r#"localhost:4361 wants you to sign in with your Ethereum account:
+0x35f3f5eC9873e6Bf6204E7612948d4151178EE27
+
+SIWE Notepad Example
+
+URI: http://localhost:4361
+Version: 1
+Chain ID: 1
+Nonce: kEWepMt9knR6lWJ6A
+Issued At: 2021-12-07T18:28:18.807Z"#,
+        )
+        .unwrap();
+
+        let signature =
+            test_helpers::sign_message_eip191(message.to_string().as_str(), &private_key);
+        let (predeploy_address, signature) =
+            predeploy_signature(eoa_owner_address, create2_factory_address, signature);
+
+        assert_eq!(
+            predeploy_address,
+            Address::from_str("0x35f3f5eC9873e6Bf6204E7612948d4151178EE27").unwrap()
+        );
+
+        let opts = VerificationOpts {
+            rpc_provider: Some(provider),
+            ..Default::default()
+        };
+
+        let result = message.verify(&signature, &opts).await;
+
+        println!("{:?}", result);
+        assert!(result.is_ok());
+        println!("✅")
     }
 
     #[tokio::test]
