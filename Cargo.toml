@@ -15,8 +15,9 @@ default = ["alloy"]
 alloy = ["dep:alloy"]
 
 [dependencies]
-alloy = { version = "0.2", features = ["contract", "dyn-abi", "json-abi", "providers", "transport-http"], optional = true}
-eth-signature-verifier = "0.2"
+alloy = { version = "0.2", optional = true, default-features = false, features = [ "contract", "dyn-abi", "json-abi", "providers", "transport-http", "reqwest-rustls-tls" ]}
+# eth-signature-verifier = "0.2"
+eth-signature-verifier = { version = "0.2", git = "https://github.com/royal-markets/eth-signature-verifier", branch = "remove-openssl" }
 iri-string = "0.7"
 hex = "0.4"
 k256 = { version = "0.13", default-features = false, features = [
